@@ -1,4 +1,5 @@
 #include <cstdint>
+
 #include <cstdio>
 
 #include <Windows.h>
@@ -8,8 +9,6 @@
 #include <shlobj_core.h>
 #include <rpcdce.h>
 #include <wrl\client.h>
-
-#include "och_fmt.h"
 
 #pragma comment(lib, "Rpcrt4.lib")
 
@@ -30,12 +29,8 @@ void flee_(const wchar_t* message) noexcept
 
 #define flee(macro_defined_argument, macro_defined_message) if(HRESULT macro_defined_rst = (macro_defined_argument); macro_defined_rst != S_OK) flee_(macro_defined_message);
 
-#define curr_refcnt(macro_defined_argument) macro_defined_argument->AddRef(); och::print("Reference count on line {} is {}\n", __LINE__, static_cast<uint32_t>(macro_defined_argument->Release()));
-
 struct global_data_struct
 {
-	
-
 	struct directory_change_event_handler : IUIAutomationPropertyChangedEventHandler
 	{
 	private:
@@ -76,6 +71,7 @@ struct global_data_struct
 		{
 			newValue;
 
+			// Just a security check that nothing went horribly wrong...
 			if (propertyID != UIA_NamePropertyId)
 			{
 				notify_user(L"Unexpected property change ID\n");
@@ -83,13 +79,15 @@ struct global_data_struct
 				return S_OK;
 			}
 
+			// Find the slot corresponding to the changed address element
+
 			uint32_t slot = ~0u;
 
 			for (uint32_t s = 0; s != 32; ++s)
 			{
 				BOOL equal_elems = FALSE;
 
-				if (global.explorer_address_elements[s] && global.ui_automation->CompareElements(pSender, global.explorer_address_elements[s].Get(), &equal_elems) != S_OK)
+				if (global.explorer_address_elements[s].Get() && global.ui_automation->CompareElements(pSender, global.explorer_address_elements[s].Get(), &equal_elems) != S_OK)
 				{
 					notify_user(L"Element comparison regarding Folder change failed");
 
@@ -107,170 +105,7 @@ struct global_data_struct
 				return S_OK;
 			}
 
-			UIA_HWND sender_hwnd;
-
-			if (global.explorer_window_elements[slot]->get_CurrentNativeWindowHandle(&sender_hwnd) != S_OK)
-			{
-				notify_user(L"Could not get HWND for changed Explorer Window");
-
-				return S_OK;
-			}
-
-			long shell_cnt;
-
-			if (global.shell_windows->get_Count(&shell_cnt) != S_OK)
-			{
-				notify_user(L"Could not get number of current shell windows");
-
-				return S_OK;
-			}
-
-			for (long i = 0; i != shell_cnt; ++i)
-			{
-				comptr<IDispatch> dispatch;
-
-				VARIANT index_var;
-				index_var.vt = VT_I4;
-				index_var.lVal = i;
-
-				if (global.shell_windows->Item(index_var, &dispatch) != S_OK)
-				{
-					notify_user(L"Could not access shell window from collection");
-
-					return S_OK;
-				}
-
-				comptr<IWebBrowserApp> web_browser_app;
-
-				if (dispatch->QueryInterface(IID_PPV_ARGS(&web_browser_app)) != S_OK)
-				{
-					notify_user(L"Could not get WebBrowserApp interface from shell window");
-
-					return S_OK;
-				}
-
-				SHANDLE_PTR shell_hwnd;
-
-				if (web_browser_app->get_HWND(&shell_hwnd) != S_OK)
-				{
-					notify_user(L"Could not get HWND from WebBrowserApp");
-
-					return S_OK;
-				}
-
-				if (reinterpret_cast<void*>(shell_hwnd) == sender_hwnd)
-				{
-					comptr<IServiceProvider> service_provider;
-
-					if (web_browser_app->QueryInterface(service_provider.GetAddressOf()) != S_OK)
-					{
-						notify_user(L"Could not acquire ServiceProvider from WebBrowserApp");
-
-						return S_OK;
-					}
-
-					comptr<IShellBrowser> shell_browser;
-
-					if (service_provider->QueryService(SID_STopLevelBrowser, shell_browser.GetAddressOf()) != S_OK)
-					{
-						notify_user(L"Could not acquire ShellBrowser from Service Provider");
-
-						return S_OK;
-					}
-
-					comptr<IShellView> shell_view;
-
-					if (shell_browser->QueryActiveShellView(shell_view.GetAddressOf()) != S_OK)
-					{
-						notify_user(L"Could not get ShellView from ShellBrowser");
-
-						return S_OK;
-					}
-
-					comptr<IFolderView> folder_view;
-
-					if (shell_view->QueryInterface(folder_view.GetAddressOf()) != S_OK)
-					{
-						notify_user(L"Could not get FolderView from ShellView");
-
-						return S_OK;
-					}
-
-					comptr<IPersistFolder2> persist_folder;
-
-					if (folder_view->GetFolder(IID_IPersistFolder2, reinterpret_cast<void**>(persist_folder.GetAddressOf())) != S_OK)
-					{
-						notify_user(L"Could not get PersistFolder2 from FolderView");
-
-						return S_OK;
-					}
-
-					CoTaskMemFree(global.explorer_addresses[slot]);
-
-					if (persist_folder->GetCurFolder(global.explorer_addresses + slot) != S_OK)
-					{
-						notify_user(L"Could not get new Folder of changed File Explorer Window");
-
-						return S_OK;
-					}
-
-					return S_OK;
-				}
-			}
-
-			//uint32_t bytes = *reinterpret_cast<uint32_t*>(newValue.bstrVal - 2) + 2;
-			//
-			//wchar_t* address_trimmed = newValue.bstrVal;
-			//
-			//while (*address_trimmed != ':')
-			//	if (!*address_trimmed)
-			//		return S_OK;
-			//	else
-			//	{
-			//		++address_trimmed;
-			//
-			//		bytes -= 2;
-			//	}
-			//
-			//if (*++address_trimmed == ' ')
-			//{
-			//	++address_trimmed;
-			//
-			//	bytes -= 2;
-			//}
-			//
-			//if (bytes > sizeof(global.explorer_address_strings[0]))
-			//	return S_OK;
-			//
-			//for (uint32_t i = 0; i != 32; ++i)
-			//{
-			//	if (!global.explorer_address_elements[i])
-			//		continue;
-			//
-			//	BOOL element_found;
-			//
-			//	if (uint64_t rst = global.ui_automation->CompareElements(pSender, global.explorer_address_elements[i].Get(), &element_found); rst != S_OK)
-			//	{
-			//		//notify_user(L"Automation Element comparison related to address change failed");
-			//
-			//		och::print("Automation Element comparison related to address change failed ({} / 0x{:X})", rst, rst);
-			//
-			//		continue;
-			//	}
-			//
-			//	if (element_found)
-			//	{
-			//		global.explorer_address_bytes[i] = static_cast<uint16_t>(bytes);
-			//
-			//		memcpy(global.explorer_address_strings[i], address_trimmed, bytes);
-			//
-			//		wprintf(L"%s\n", global.explorer_address_strings[i]);
-			//
-			//		return S_OK;
-			//	}
-			//}
-
-			notify_user(L"Could not find Explorer window related to address change");
+			global.get_explorer_window_address(slot);
 
 			return S_OK;
 		}
@@ -321,8 +156,6 @@ struct global_data_struct
 			{
 			case UIA_Window_WindowOpenedEventId:
 
-				och::print("Explorer opened\n");
-
 				pSender->AddRef();
 
 				UIA_HWND hwnd;
@@ -334,7 +167,7 @@ struct global_data_struct
 					return S_OK;
 				}
 
-				global.set_window_address(hwnd);
+				global.set_explorer_window_address(hwnd);
 
 				global.add_window(pSender);
 
@@ -343,8 +176,6 @@ struct global_data_struct
 
 
 			case UIA_Window_WindowClosedEventId:
-
-				och::print("Explorer closed\n");
 
 				global.remove_window(pSender);
 
@@ -376,8 +207,6 @@ struct global_data_struct
 	comptr<IUIAutomation> ui_automation{};
 
 	comptr<IShellFolder> shell_folder{};
-
-	comptr<IUIAutomationElement> desktop_root{};
 
 	comptr<IUIAutomationCondition> address_id_search_condition{};
 
@@ -412,6 +241,8 @@ struct global_data_struct
 		flee(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation, (&ui_automation)), 
 			L"Could not create UIAutomation instance");
 
+		comptr<IUIAutomationElement> desktop_root;
+
 		flee(ui_automation->GetRootElement(&desktop_root), 
 			L"Could not acquire root automation element");
 
@@ -433,44 +264,44 @@ struct global_data_struct
 		explorer_window_class_name = SysAllocString(L"ExplorerWClass");
 
 		comptr<IUIAutomationCondition> cabinet_condition;
-
+		
 		comptr<IUIAutomationCondition> explorer_condition;
-
+		
 		comptr<IUIAutomationCondition> search_condition;
-
+		
 		VARIANT cabinet_var;
 		cabinet_var.vt = VT_BSTR;
 		cabinet_var.bstrVal = cabinet_window_class_name;
-
+		
 		VARIANT explorer_var;
 		explorer_var.vt = VT_BSTR;
 		explorer_var.bstrVal = explorer_window_class_name;
-
+		
 		flee(ui_automation->CreatePropertyCondition(UIA_ClassNamePropertyId, cabinet_var, &cabinet_condition), 
 			L"Could not create CabinetWClass Property Condition");
-
+		
 		flee(ui_automation->CreatePropertyCondition(UIA_ClassNamePropertyId, explorer_var, &explorer_condition), 
 			L"Could not create ExplorerWClass Property Condition");
-
+		
 		flee(ui_automation->CreateOrCondition(cabinet_condition.Get(), explorer_condition.Get(), &search_condition),
 			L"Could not create Explorer-Window search condition");
-
+		
 		// Perform search
-
+		
 		comptr<IUIAutomationElementArray> found;
-
+		
 		flee(desktop_root->FindAll(TreeScope_Children, search_condition.Get(), &found),
 			L"Initial search for Explorer Windows failed");
-
+		
 		int32_t elem_cnt;
-
+		
 		flee(found->get_Length(&elem_cnt),
 			L"Could not acquire number of initial Explorer Windows");
-
+		
 		for (int32_t i = 0; i != elem_cnt; ++i)
 		{
 			comptr<IUIAutomationElement> curr;
-
+		
 			if (found->GetElement(i, &curr) != S_OK)
 				notify_user(L"Could not get Explorer Window Automation Element from Search Array");
 			else
@@ -482,7 +313,7 @@ struct global_data_struct
 
 	~global_data_struct() noexcept
 	{
-		och::print("Freeing...\n");
+		notify_user(L"Terminating explorer_cache.exe");
 
 		SysFreeString(cabinet_window_class_name);
 
@@ -504,12 +335,10 @@ struct global_data_struct
 		return ~0u;
 	}
 
-	void set_window_address(UIA_HWND explorer_window) noexcept
+	void set_explorer_window_address(UIA_HWND explorer_window) noexcept
 	{
 		if (!last_closed_explorer_address)
 		{
-			och::print("No closed explorer\n");
-
 			return;
 		}
 
@@ -587,15 +416,6 @@ struct global_data_struct
 
 	void add_window(comptr<IUIAutomationElement> explorer_window) noexcept
 	{
-		comptr<IUIAutomationElement> address_bar;
-
-		if (explorer_window->FindFirst(TreeScope_Descendants, address_id_search_condition.Get(), &address_bar) != S_OK || !address_bar)
-		{
-			notify_user(L"Could not find address bar in explorer window\n");
-
-			return;
-		}
-
 		uint32_t slot = allocate_slot();
 
 		if (slot == ~0u)
@@ -605,17 +425,24 @@ struct global_data_struct
 			return;
 		}
 
+		explorer_window_elements[slot] = explorer_window;
+
+		explorer_address_elements[slot] = nullptr;
+
+		comptr<IUIAutomationElement> address_bar;
+
+		if (explorer_window->FindFirst(TreeScope_Descendants, address_id_search_condition.Get(), &address_bar) != S_OK || !address_bar)
+			return; // This is relevant if the window corresponding to explorer_window is minimized
+
 		PROPERTYID name_property_ids[]{ UIA_NamePropertyId };
 
 		if (ui_automation->AddPropertyChangedEventHandlerNativeArray(address_bar.Get(), TreeScope_Element, nullptr, &directory_change_handler, name_property_ids, _countof(name_property_ids)) != S_OK)
-		{
 			notify_user(L"Could not add event handler for created Explorer Window\n");
-		}
 		else
 		{
-			explorer_window_elements[slot] = explorer_window;
-
 			explorer_address_elements[slot] = address_bar;
+
+			get_explorer_window_address(slot);
 		}
 	}
 
@@ -623,25 +450,36 @@ struct global_data_struct
 	{
 		for (uint32_t i = 0; i != 32; ++i)
 		{
-			BOOL element_found;
+			BOOL element_found = 0;
 
-			flee(ui_automation->CompareElements(explorer_window.Get(), explorer_window_elements[i].Get(), &element_found), 
-				L"Element comparison on removed Explorer Window Element failed. This is a critical failure leading to a potential memory leak. Shutting down");
+			if(explorer_window_elements[i].Get())
+				flee(ui_automation->CompareElements(explorer_window.Get(), explorer_window_elements[i].Get(), &element_found), 
+					L"Element comparison on removed Explorer Window Element failed. This is a critical failure leading to a potential memory leak. Shutting down");
 
 			if (element_found)
 			{
-				flee(ui_automation->RemovePropertyChangedEventHandler(explorer_address_elements[i].Get(), &directory_change_handler), 
-					L"Failed to remove Event Handler for a closed Explorer Window. This is a critical failure leading to a potential memory leak. Shutting down");
+				if (explorer_address_elements[i].Get())
+				{
+					flee(ui_automation->RemovePropertyChangedEventHandler(explorer_address_elements[i].Get(), &directory_change_handler),
+						L"Failed to remove Event Handler for a closed Explorer Window. This is a critical failure leading to a potential memory leak. Shutting down");
 
-				&explorer_address_elements[i];
+					&explorer_address_elements[i];
 
-				&explorer_window_elements[i];
+					&explorer_window_elements[i];
 
-				slots_occupied_bits &= ~(1u << i);
+					slots_occupied_bits &= ~(1u << i);
 
-				last_closed_explorer_address = explorer_addresses[i];
+					last_closed_explorer_address = explorer_addresses[i];
 
-				explorer_addresses[i] = nullptr;
+					explorer_addresses[i] = nullptr;
+
+				}
+				else
+				{
+					&explorer_window_elements[i];
+
+					slots_occupied_bits &= (1u << i);
+				}
 
 				return;
 			}
@@ -678,9 +516,140 @@ struct global_data_struct
 		return is_cabinet || is_explorer;
 	}
 
+	void get_explorer_window_address(uint32_t slot) noexcept
+	{
+		// Get hwnd of explorer window element corresponding to address element
+
+		UIA_HWND changed_hwnd;
+
+		if (global.explorer_window_elements[slot]->get_CurrentNativeWindowHandle(&changed_hwnd) != S_OK)
+		{
+			notify_user(L"Could not get HWND for changed Explorer Window");
+
+			return;
+		}
+
+		// Enumerate open shell windows
+
+		long shell_cnt;
+
+		if (global.shell_windows->get_Count(&shell_cnt) != S_OK)
+		{
+			notify_user(L"Could not get number of current shell windows");
+
+			return;
+		}
+
+		// Check which Shell Window corresponds to the changed address element
+
+		for (long i = 0; i != shell_cnt; ++i)
+		{
+			comptr<IDispatch> dispatch;
+
+			VARIANT index_var;
+			index_var.vt = VT_I4;
+			index_var.lVal = i;
+
+			if (global.shell_windows->Item(index_var, &dispatch) != S_OK)
+			{
+				notify_user(L"Could not access shell window from collection");
+
+				return;
+			}
+
+			comptr<IWebBrowserApp> web_browser_app;
+
+			if (dispatch->QueryInterface(IID_PPV_ARGS(&web_browser_app)) != S_OK)
+			{
+				notify_user(L"Could not get WebBrowserApp interface from shell window");
+
+				return;
+			}
+
+			SHANDLE_PTR shell_hwnd;
+
+			if (web_browser_app->get_HWND(&shell_hwnd) != S_OK)
+			{
+				notify_user(L"Could not get HWND from WebBrowserApp");
+
+				return;
+			}
+
+			// Check if we found the changed window
+
+			if (reinterpret_cast<void*>(shell_hwnd) == changed_hwnd)
+			{
+				comptr<IServiceProvider> service_provider;
+
+				if (web_browser_app->QueryInterface(service_provider.GetAddressOf()) != S_OK)
+				{
+					notify_user(L"Could not acquire ServiceProvider from WebBrowserApp");
+
+					return;
+				}
+
+				comptr<IShellBrowser> shell_browser;
+
+				if (service_provider->QueryService(SID_STopLevelBrowser, shell_browser.GetAddressOf()) != S_OK)
+				{
+					notify_user(L"Could not acquire ShellBrowser from Service Provider");
+
+					return;
+				}
+
+				comptr<IShellView> shell_view;
+
+				if (shell_browser->QueryActiveShellView(shell_view.GetAddressOf()) != S_OK)
+				{
+					notify_user(L"Could not get ShellView from ShellBrowser");
+
+					return;
+				}
+
+				comptr<IFolderView> folder_view;
+
+				if (shell_view->QueryInterface(folder_view.GetAddressOf()) != S_OK)
+				{
+					notify_user(L"Could not get FolderView from ShellView");
+
+					return;
+				}
+
+				comptr<IPersistFolder2> persist_folder;
+
+				if (folder_view->GetFolder(IID_IPersistFolder2, reinterpret_cast<void**>(persist_folder.GetAddressOf())) != S_OK)
+				{
+					notify_user(L"Could not get PersistFolder2 from FolderView");
+
+					return;
+				}
+
+				// Get new address as LPITEMIDLIST
+
+				CoTaskMemFree(global.explorer_addresses[slot]);
+
+				if (persist_folder->GetCurFolder(global.explorer_addresses + slot) != S_OK)
+				{
+					notify_user(L"Could not get new Folder of changed File Explorer Window");
+
+					return;
+				}
+
+				return;
+			}
+		}
+
+		notify_user(L"Could not find Explorer window related to address change");
+	}
+
 } global{};
 
-int main()
+int APIENTRY WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR command_line, int show_commands)
 {
+	instance;
+	prev_instance;
+	command_line;
+	show_commands;
+
 	SleepEx(INFINITE, 1);
 }
