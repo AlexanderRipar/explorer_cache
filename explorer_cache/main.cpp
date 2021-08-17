@@ -4,7 +4,10 @@
 #define STRICT_TYPED_ITEMIDS
 
 #include <Windows.h>
+#include <windowsx.h>
 #include <Ole2.h>
+#include <CommCtrl.h>
+#include <Shlwapi.h>
 
 #include <ShlObj.h>
 #include <atlbase.h>
@@ -14,11 +17,109 @@
 
 #include <cstdio>
 
+
+
+HRESULT build_explorer_list();
+
+
+
 constexpr const wchar_t* g_message_caption = L"explorer_cache.exe";
 
 CComPtr<IShellWindows> g_shell_windows;
 
+HWND g_window_child;
 
+HINSTANCE g_instance;
+
+uint32_t g_openclose_cnt;
+
+
+
+
+void on_size(HWND window, uint32_t state, int32_t cx, int32_t cy)
+{
+	window, state;
+
+	if (g_window_child)
+		MoveWindow(g_window_child, 0, 0, cx, cy, true);
+}
+
+BOOL on_create(HWND window, LPCREATESTRUCT create_struct);
+
+void on_destroy(HWND window);
+
+void paint_content(HWND window, PAINTSTRUCT* ps)
+{
+	window, ps;
+}
+
+void on_paint(HWND window)
+{
+	PAINTSTRUCT ps;
+	
+	BeginPaint(window, &ps);
+
+	paint_content(window, &ps);
+
+	EndPaint(window, &ps);
+}
+
+void on_print_client(HWND window, HDC hdc)
+{
+	PAINTSTRUCT ps;
+
+	ps.hdc = hdc;
+
+	GetClientRect(window, &ps.rcPaint);
+
+	paint_content(window, &ps);
+}
+
+LRESULT on_notify(HWND window, int32_t id_from, NMHDR* nmhdr);
+
+LRESULT CALLBACK window_fn(HWND window, uint32_t message, WPARAM wParam, LPARAM lParam)
+{
+	switch (message)
+	{
+		HANDLE_MSG(window, WM_CREATE, on_create);
+
+		HANDLE_MSG(window, WM_SIZE, on_size);
+
+		HANDLE_MSG(window, WM_DESTROY, on_destroy);
+
+		HANDLE_MSG(window, WM_PAINT, on_paint);
+
+		HANDLE_MSG(window, WM_NOTIFY, on_notify);
+
+	case WM_PRINTCLIENT:
+
+		on_print_client(window, reinterpret_cast<HDC>(wParam));
+
+		return 0;
+	}
+
+	return DefWindowProcW(window, message, wParam, lParam);
+}
+
+bool init()
+{
+	WNDCLASS wc;
+	wc.style = 0;
+	wc.lpfnWndProc = window_fn;
+	wc.cbClsExtra = 0;
+	wc.cbWndExtra = 0;
+	wc.hInstance = g_instance;
+	wc.hIcon = nullptr;
+	wc.hCursor = LoadCursorW(g_instance, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.lpszMenuName = nullptr;
+	wc.lpszClassName = L"och_scratch";
+	
+	if (!RegisterClassW(&wc))
+		return false;
+
+	return true;
+}
 
 
 
@@ -29,7 +130,7 @@ CComPtr<IShellWindows> g_shell_windows;
 
 
 template<typename DispInterface>
-struct CDispInterfaceBase : public DispInterface
+struct dispatch_interface_base : public DispInterface
 {
 
 private:
@@ -42,10 +143,12 @@ private:
 
 public:
 
-	CDispInterfaceBase() : m_ref_cnt(1), m_cookie(0) { }
+	dispatch_interface_base() : m_ref_cnt(1), m_cookie(0) { }
+
+	virtual ~dispatch_interface_base() {};
 
 	// Derived class must implement SimpleInvoke
-	virtual HRESULT SimpleInvoke(DISPID dispid, DISPPARAMS* pdispparams, VARIANT* pvarResult) = 0;
+	virtual HRESULT simple_invoke(DISPID id, DISPPARAMS* params, VARIANT* var_results) = 0;
 
 	/* IUnknown */
 	IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
@@ -90,22 +193,28 @@ public:
 
 	IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
 	{
+		iTInfo; lcid;
+
 		*ppTInfo = nullptr;
 
 		return E_NOTIMPL;
 	}
 
-	IFACEMETHODIMP GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
+	IFACEMETHODIMP GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
 	{
+		riid; rgszNames; cNames; lcid; rgDispId;
+
 		return E_NOTIMPL;
 	}
 
 	IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
 	{
+		riid; lcid; wFlags; pexcepinfo; puArgErr;
+
 		if (pvarResult) 
 			VariantInit(pvarResult);
 
-		return SimpleInvoke(dispid, pdispparams, pvarResult);
+		return simple_invoke(dispid, pdispparams, pvarResult);
 	}
 
 	HRESULT Connect(IUnknown* punk)
@@ -132,132 +241,172 @@ public:
 	}
 };
 
-struct browser_event_handler : public DWebBrowserEvents
+
+
+void update_text(HWND window, PCWSTR text);
+
+struct browser_event_sink : public dispatch_interface_base<DWebBrowserEvents>
 {
 private:
 
-	LONG m_ref_cnt;
-
-	CComPtr<IConnectionPoint> m_connection_point;
-
-	DWORD m_cookie;
-
-	HWND m_explorer_window;
+	HWND m_window;
 
 public:
 
-	browser_event_handler(HWND explorer_window) : m_ref_cnt{ 1 }, m_cookie{ 0 }, m_explorer_window{ explorer_window } { }
+	browser_event_sink(HWND window) : m_window{ window } {}
 
-	/* IUnknown */
-	IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
+	IFACEMETHODIMP simple_invoke(DISPID id, DISPPARAMS* params, VARIANT* var_results)
 	{
-		*ppv = nullptr;
+		var_results;
 
-		HRESULT hr = E_NOINTERFACE;
-
-		if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DWebBrowserEvents)
-		{
-			*ppv = static_cast<DWebBrowserEvents*>(static_cast<IDispatch*>(this));
-
-			AddRef();
-
-			hr = S_OK;
-		}
-
-		return hr;
-	}
-
-	IFACEMETHODIMP_(ULONG) AddRef()
-	{
-		return InterlockedIncrement(&m_ref_cnt);
-	}
-
-	IFACEMETHODIMP_(ULONG) Release()
-	{
-		return InterlockedDecrement(&m_ref_cnt);
-	}
-
-	// *** IDispatch ***
-	IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo)
-	{
-		*pctinfo = 0;
-
-		return E_NOTIMPL;
-	}
-
-	IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
-	{
-		*ppTInfo = nullptr;
-
-		return E_NOTIMPL;
-	}
-
-	IFACEMETHODIMP GetIDsOfNames(REFIID, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
-	{
-		return E_NOTIMPL;
-	}
-
-	IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
-	{
-		if (pvarResult)
-			VariantInit(pvarResult);
-
-		switch (dispid)
+		switch (id)
 		{
 		case DISPID_NAVIGATECOMPLETE:
-
-			wprintf(L"%s\n", pdispparams->rgvarg[0].bstrVal);
-
+			update_text(m_window, params->rgvarg[0].bstrVal);
 			break;
 
 		case DISPID_QUIT:
-
-			wprintf(L"Quit\n");
-
-			break;
-		
-		default:
-
-			wprintf(L"Other (%d)\n", dispid);
-
+			update_text(m_window, L"<closed>");
 			break;
 		}
 
 		return S_OK;
 	}
+};
 
-	HRESULT Connect(IUnknown* unknown)
+struct shell_event_sink : public dispatch_interface_base<DShellWindowsEvents>
+{
+	IFACEMETHODIMP simple_invoke(DISPID id, DISPPARAMS* params, VARIANT* var_results)
 	{
-		CComPtr<IConnectionPointContainer> connection_point_container;
+		params; var_results;
 
-		checkret(unknown->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
+		if (id == DISPID_WINDOWREGISTERED || id == DISPID_WINDOWREVOKED)
+			build_explorer_list();
 
-		checkret(connection_point_container->FindConnectionPoint(DIID_DWebBrowserEvents, &m_connection_point));
-
-		return m_connection_point->Advise(this, &m_cookie);
+		return S_OK;
 	}
 
-	void Disconnect()
+	~shell_event_sink() {};
+};
+
+CComPtr<shell_event_sink> g_shell_handler;
+
+struct item_info
+{
+	HWND m_window;
+
+	CComPtr<browser_event_sink> handler;
+
+	uint32_t last_openclose_cnt;
+
+	item_info(HWND window, IDispatch* dispatch) : m_window{ window }, last_openclose_cnt{ g_openclose_cnt }
 	{
-		if (m_cookie)
+		handler.Attach(new(std::nothrow) browser_event_sink(window));
+
+		if (handler)
+			handler->Connect(dispatch);
+	}
+
+	~item_info() 
+	{
+		if (handler)
+			handler->Disconnect();
+	}
+};
+
+
+
+LRESULT on_notify(HWND window, int32_t id_from, NMHDR* nmhdr)
+{
+	window;
+
+	if (id_from == 1)
+	{
+		if (nmhdr->code == LVN_DELETEITEM)
 		{
-			m_connection_point->Unadvise(m_cookie);
+			NMLISTVIEW* nm_listview = CONTAINING_RECORD(nmhdr, NMLISTVIEW, hdr);
 
-			m_connection_point.Release();
-
-			m_cookie = 0;
+			delete reinterpret_cast<item_info*>(nm_listview->lParam);
 		}
 	}
-};
 
-struct co_init
+	return 0;
+}
+
+BOOL on_create(HWND window, LPCREATESTRUCT create_struct)
 {
-	co_init() noexcept { checkexit(CoInitialize(nullptr), L"Could not Initialize COM"); }
+	create_struct;
 
-	~co_init() noexcept { CoUninitialize(); }
-};
+	g_window_child = CreateWindow(WC_LISTVIEW, nullptr, LVS_LIST | WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(1), g_instance, 0);
+
+	if (g_shell_windows.CoCreateInstance(CLSID_ShellWindows) != S_OK)
+		return FALSE;
+
+	build_explorer_list();
+
+	g_shell_handler.Attach(new(std::nothrow) shell_event_sink);
+
+	g_shell_handler->Connect(g_shell_windows);
+
+	return TRUE;
+}
+
+void on_destroy(HWND window)
+{
+	window;
+
+	g_shell_windows.Release();
+
+	if (g_shell_handler)
+	{
+		g_shell_handler->Disconnect();
+
+		g_shell_handler.Release();
+	}
+
+	PostQuitMessage(0);
+}
 
 
+
+item_info* get_item_by_index(int32_t index)
+{
+	LVITEM item{};
+	item.mask = LVIF_PARAM;
+	item.iItem = index;
+	
+	ListView_GetItem(g_window_child, &item);
+
+	return reinterpret_cast<item_info*>(item.lParam);
+}
+
+item_info* get_item_by_window(HWND window, int32_t* out_index)
+{
+	int32_t index = ListView_GetItemCount(g_window_child);
+
+	while (--index >= 0)
+	{
+		item_info* info = get_item_by_index(index);
+
+		if (info->m_window == window)
+		{
+			if (out_index)
+				*out_index = index;
+
+			return info;
+		}
+	}
+
+	return nullptr;
+}
+
+void update_text(HWND window, PCWSTR text)
+{
+	int index;
+
+	if (get_item_by_window(window, &index))
+		ListView_SetItemText(g_window_child, index, 0, const_cast<PWSTR>(text));
+}
 
 HRESULT get_location_from_view(IShellBrowser* shell_browser, PWSTR* out_location) noexcept
 {
@@ -286,45 +435,94 @@ HRESULT get_browser_info(IUnknown* unknown, HWND* out_window, PWSTR* out_locatio
 
 	checkret(shell_browser->GetWindow(out_window));
 
-	if (get_location_from_view(shell_browser, out_location) == S_OK)
-		return S_OK;
+	return get_location_from_view(shell_browser, out_location);
 }
 
-HRESULT init_windows() noexcept
+HRESULT build_explorer_list()
 {
 	CComPtr<IUnknown> unknown_enum;
 	checkret(g_shell_windows->_NewEnum(&unknown_enum));
+
+	++g_openclose_cnt;
 
 	CComQIPtr<IEnumVARIANT> enum_variant(unknown_enum);
 
 	for (CComVariant var; enum_variant->Next(1, &var, nullptr) == S_OK; var.Clear())
 	{
-		if (var.vt != VT_DISPATCH) continue;
+		if (var.vt != VT_DISPATCH)
+			continue;
 
 		HWND curr_window;
+
 		CComHeapPtr<WCHAR> curr_location;
 
 		if (get_browser_info(var.pdispVal, &curr_window, &curr_location) != S_OK)
 			continue;
 
-		wprintf(L"%p: %s\n", curr_window, curr_location.m_pData);
+		item_info* info = get_item_by_window(curr_window, nullptr);
+
+		if (info)
+		{
+			info->last_openclose_cnt = g_openclose_cnt;
+
+			continue;
+		}
+		else
+			info = new(std::nothrow) item_info(curr_window, var.pdispVal);
+
+		if (!info)
+			continue;
+
+		LVITEM item{};
+		item.mask = LVIF_TEXT | LVIF_PARAM;
+		item.iItem = MAXLONG;
+		item.iSubItem = 0;
+		item.pszText = curr_location;
+		item.lParam = reinterpret_cast<LPARAM>(info);
+		
+		if (ListView_InsertItem(g_window_child, &item) < 0)
+			delete info;
+	}
+
+	int32_t item_idx = ListView_GetItemCount(g_window_child);
+
+	while (--item_idx >= 0)
+	{
+		item_info* info = get_item_by_index(item_idx);
+
+		if (info->last_openclose_cnt != g_openclose_cnt)
+			ListView_DeleteItem(g_window_child, item_idx);
 	}
 
 	return S_OK;
 }
 
-
-
-
-int main()
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR command_line, int32_t command_show)
 {
-	co_init init;
+	command_line, prev_instance;
 
-	checkexit(g_shell_windows.CoCreateInstance(CLSID_ShellWindows), L"Could not Create ShellWindows instance");
+	g_instance = instance;
 
-	checkexit(init_windows(), L"Failed");
+	if (!init())
+		return 0;
 
-	SleepEx(5000, 1);
+	if (CoInitialize(nullptr) != S_OK)
+		return 0;
 
-	g_shell_windows.Release();
+	HWND window = CreateWindowW(L"och_scratch", L"scratch ui", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, 0);
+
+	ShowWindow(window, command_show);
+
+	MSG message;
+
+	while (GetMessageW(&message, nullptr, 0, 0))
+	{
+		TranslateMessage(&message);
+
+		DispatchMessageW(&message);
+	}
+
+	CoUninitialize();
+
+	return 0;
 }
