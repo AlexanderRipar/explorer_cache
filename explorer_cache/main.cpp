@@ -1,5 +1,3 @@
-//#define UNICODE
-//#define _UNICODE
 #define STRICT
 #define STRICT_TYPED_ITEMIDS
 
@@ -25,101 +23,16 @@ HRESULT build_explorer_list();
 
 constexpr const wchar_t* g_message_caption = L"explorer_cache.exe";
 
+constexpr const wchar_t* g_window_class_name = L"och_scratch";
+
 CComPtr<IShellWindows> g_shell_windows;
 
 HWND g_window_child;
-
-HINSTANCE g_instance;
 
 uint32_t g_openclose_cnt;
 
 
 
-
-void on_size(HWND window, uint32_t state, int32_t cx, int32_t cy)
-{
-	window, state;
-
-	if (g_window_child)
-		MoveWindow(g_window_child, 0, 0, cx, cy, true);
-}
-
-BOOL on_create(HWND window, LPCREATESTRUCT create_struct);
-
-void on_destroy(HWND window);
-
-void paint_content(HWND window, PAINTSTRUCT* ps)
-{
-	window, ps;
-}
-
-void on_paint(HWND window)
-{
-	PAINTSTRUCT ps;
-	
-	BeginPaint(window, &ps);
-
-	paint_content(window, &ps);
-
-	EndPaint(window, &ps);
-}
-
-void on_print_client(HWND window, HDC hdc)
-{
-	PAINTSTRUCT ps;
-
-	ps.hdc = hdc;
-
-	GetClientRect(window, &ps.rcPaint);
-
-	paint_content(window, &ps);
-}
-
-LRESULT on_notify(HWND window, int32_t id_from, NMHDR* nmhdr);
-
-LRESULT CALLBACK window_fn(HWND window, uint32_t message, WPARAM wParam, LPARAM lParam)
-{
-	switch (message)
-	{
-		HANDLE_MSG(window, WM_CREATE, on_create);
-
-		HANDLE_MSG(window, WM_SIZE, on_size);
-
-		HANDLE_MSG(window, WM_DESTROY, on_destroy);
-
-		HANDLE_MSG(window, WM_PAINT, on_paint);
-
-		HANDLE_MSG(window, WM_NOTIFY, on_notify);
-
-	case WM_PRINTCLIENT:
-
-		on_print_client(window, reinterpret_cast<HDC>(wParam));
-
-		return 0;
-	}
-
-	return DefWindowProcW(window, message, wParam, lParam);
-}
-
-bool init()
-{
-	WNDCLASS wc;
-	wc.style = 0;
-	wc.lpfnWndProc = window_fn;
-	wc.cbClsExtra = 0;
-	wc.cbWndExtra = 0;
-	wc.hInstance = g_instance;
-	wc.hIcon = nullptr;
-	wc.hCursor = LoadCursorW(g_instance, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-	wc.lpszMenuName = nullptr;
-	wc.lpszClassName = L"och_scratch";
-	
-	if (!RegisterClassW(&wc))
-		return false;
-
-	return true;
-}
 
 
 
@@ -129,33 +42,32 @@ bool init()
 
 
 
-template<typename DispInterface>
-struct dispatch_interface_base : public DispInterface
+
+
+void update_text(HWND window, PCWSTR text);
+
+
+
+struct shell_event_sink : public DShellWindowsEvents
 {
-
 private:
-
-	LONG m_ref_cnt;
 
 	CComPtr<IConnectionPoint> m_connection_point;
 
-	DWORD m_cookie;
+	uint32_t m_ref_cnt;
+
+	uint32_t m_cookie;
 
 public:
 
-	dispatch_interface_base() : m_ref_cnt(1), m_cookie(0) { }
-
-	virtual ~dispatch_interface_base() {};
-
-	// Derived class must implement SimpleInvoke
-	virtual HRESULT simple_invoke(DISPID id, DISPPARAMS* params, VARIANT* var_results) = 0;
+	shell_event_sink() : m_ref_cnt{ 1 }, m_cookie{ 0 } {}
 
 	/* IUnknown */
 	IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
 	{
-		if (riid == IID_IUnknown || riid == IID_IDispatch || riid == __uuidof(DispInterface))
+		if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DShellWindowsEvents)
 		{
-			*ppv = static_cast<DispInterface*>(static_cast<IDispatch*>(this));
+			*ppv = static_cast<DShellWindowsEvents*>(static_cast<IDispatch*>(this));
 
 			AddRef();
 
@@ -176,11 +88,7 @@ public:
 
 	IFACEMETHODIMP_(ULONG) Release()
 	{
-		LONG cRef = InterlockedDecrement(&m_ref_cnt);
-
-		if (cRef == 0) delete this;
-
-		return cRef;
+		return InterlockedDecrement(&m_ref_cnt);
 	}
 
 	// *** IDispatch ***
@@ -209,12 +117,15 @@ public:
 
 	IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
 	{
-		riid; lcid; wFlags; pexcepinfo; puArgErr;
+		riid; lcid; wFlags; pexcepinfo; puArgErr; pdispparams;
 
-		if (pvarResult) 
+		if (pvarResult)
 			VariantInit(pvarResult);
 
-		return simple_invoke(dispid, pdispparams, pvarResult);
+		if (dispid == DISPID_WINDOWREGISTERED || dispid == DISPID_WINDOWREVOKED)
+			build_explorer_list();
+
+		return S_OK;
 	}
 
 	HRESULT Connect(IUnknown* punk)
@@ -223,9 +134,124 @@ public:
 
 		checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
 
-		checkret(connection_point_container->FindConnectionPoint(__uuidof(DispInterface), &m_connection_point));
+		checkret(connection_point_container->FindConnectionPoint(DIID_DShellWindowsEvents, &m_connection_point));
 
-		return m_connection_point->Advise(this, &m_cookie);
+		return m_connection_point->Advise(this, reinterpret_cast<DWORD*>(&m_cookie));
+	}
+
+	void Disconnect()
+	{
+		if (m_cookie)
+		{
+			m_connection_point->Unadvise(m_cookie);
+
+			m_connection_point.Release();
+
+			m_cookie = 0;
+		}
+	}
+};
+
+struct browser_event_sink : DWebBrowserEvents
+{
+private:
+
+	CComPtr<IConnectionPoint> m_connection_point;
+
+	uint32_t m_ref_cnt;
+
+	uint32_t m_cookie;
+
+	HWND m_window;
+
+public:
+
+	browser_event_sink(HWND window) : m_ref_cnt{ 1 }, m_cookie{ 0 }, m_window{ window } {}
+
+	/* IUnknown */
+	IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
+	{
+		if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DWebBrowserEvents)
+		{
+			*ppv = static_cast<DWebBrowserEvents*>(static_cast<IDispatch*>(this));
+
+			AddRef();
+
+			return S_OK;
+		}
+		else
+		{
+			*ppv = nullptr;
+
+			return E_NOINTERFACE;
+		}
+	}
+
+	IFACEMETHODIMP_(ULONG) AddRef()
+	{
+		return InterlockedIncrement(&m_ref_cnt);
+	}
+
+	IFACEMETHODIMP_(ULONG) Release()
+	{
+		return InterlockedDecrement(&m_ref_cnt);
+	}
+
+	// *** IDispatch ***
+	IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo)
+	{
+		*pctinfo = 0;
+
+		return E_NOTIMPL;
+	}
+
+	IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
+	{
+		iTInfo; lcid;
+
+		*ppTInfo = nullptr;
+
+		return E_NOTIMPL;
+	}
+
+	IFACEMETHODIMP GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
+	{
+		riid; rgszNames; cNames; lcid; rgDispId;
+
+		return E_NOTIMPL;
+	}
+
+	IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
+	{
+		riid; lcid; wFlags; pexcepinfo; puArgErr; pvarResult;
+
+		if (pvarResult)
+			VariantInit(pvarResult);
+
+
+		switch (dispid)
+		{
+		case DISPID_NAVIGATECOMPLETE:
+			update_text(m_window, pdispparams->rgvarg[0].bstrVal);
+			break;
+
+		case DISPID_QUIT:
+			update_text(m_window, L"<closed>");
+			break;
+		}
+
+		return S_OK;
+	}
+
+	HRESULT Connect(IUnknown* punk)
+	{
+		CComPtr<IConnectionPointContainer> connection_point_container;
+
+		checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
+
+		checkret(connection_point_container->FindConnectionPoint(DIID_DWebBrowserEvents, &m_connection_point));
+
+		return m_connection_point->Advise(this, reinterpret_cast<DWORD*>(&m_cookie));
 	}
 
 	void Disconnect()
@@ -243,78 +269,94 @@ public:
 
 
 
-void update_text(HWND window, PCWSTR text);
+shell_event_sink g_shell_handler{};
 
-struct browser_event_sink : public dispatch_interface_base<DWebBrowserEvents>
-{
-private:
 
-	HWND m_window;
-
-public:
-
-	browser_event_sink(HWND window) : m_window{ window } {}
-
-	IFACEMETHODIMP simple_invoke(DISPID id, DISPPARAMS* params, VARIANT* var_results)
-	{
-		var_results;
-
-		switch (id)
-		{
-		case DISPID_NAVIGATECOMPLETE:
-			update_text(m_window, params->rgvarg[0].bstrVal);
-			break;
-
-		case DISPID_QUIT:
-			update_text(m_window, L"<closed>");
-			break;
-		}
-
-		return S_OK;
-	}
-};
-
-struct shell_event_sink : public dispatch_interface_base<DShellWindowsEvents>
-{
-	IFACEMETHODIMP simple_invoke(DISPID id, DISPPARAMS* params, VARIANT* var_results)
-	{
-		params; var_results;
-
-		if (id == DISPID_WINDOWREGISTERED || id == DISPID_WINDOWREVOKED)
-			build_explorer_list();
-
-		return S_OK;
-	}
-
-	~shell_event_sink() {};
-};
-
-CComPtr<shell_event_sink> g_shell_handler;
 
 struct item_info
 {
 	HWND m_window;
 
-	CComPtr<browser_event_sink> handler;
+	browser_event_sink m_handler;
 
 	uint32_t last_openclose_cnt;
 
-	item_info(HWND window, IDispatch* dispatch) : m_window{ window }, last_openclose_cnt{ g_openclose_cnt }
+	item_info(HWND window, IDispatch* dispatch) : m_window{ window }, m_handler{ window }, last_openclose_cnt{ g_openclose_cnt }
 	{
-		handler.Attach(new(std::nothrow) browser_event_sink(window));
-
-		if (handler)
-			handler->Connect(dispatch);
+		m_handler.Connect(dispatch);
 	}
 
 	~item_info() 
 	{
-		if (handler)
-			handler->Disconnect();
+		m_handler.Disconnect();
 	}
 };
 
 
+
+BOOL on_create(HWND window, LPCREATESTRUCT create_struct)
+{
+	create_struct;
+
+	g_window_child = CreateWindow(WC_LISTVIEW, nullptr, LVS_LIST | WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(1), GetModuleHandleW(nullptr), 0);
+
+	if (g_shell_windows.CoCreateInstance(CLSID_ShellWindows) != S_OK)
+		return FALSE;
+
+	build_explorer_list();
+
+	g_shell_handler.Connect(g_shell_windows);
+
+	return TRUE;
+}
+
+void on_destroy(HWND window)
+{
+	window;
+
+	MessageBoxW(nullptr, L"Closing", g_message_caption, MB_OK);
+
+	g_shell_windows.Release();
+
+	g_shell_handler.Disconnect();
+
+	PostQuitMessage(0);
+}
+
+void on_size(HWND window, uint32_t state, int32_t cx, int32_t cy)
+{
+	window, state;
+
+	if (g_window_child)
+		MoveWindow(g_window_child, 0, 0, cx, cy, true);
+}
+
+void paint_content(HWND window, PAINTSTRUCT* ps)
+{
+	window, ps;
+}
+
+void on_paint(HWND window)
+{
+	PAINTSTRUCT ps;
+
+	BeginPaint(window, &ps);
+
+	paint_content(window, &ps);
+
+	EndPaint(window, &ps);
+}
+
+void on_print_client(HWND window, HDC hdc)
+{
+	PAINTSTRUCT ps;
+
+	ps.hdc = hdc;
+
+	GetClientRect(window, &ps.rcPaint);
+
+	paint_content(window, &ps);
+}
 
 LRESULT on_notify(HWND window, int32_t id_from, NMHDR* nmhdr)
 {
@@ -333,38 +375,50 @@ LRESULT on_notify(HWND window, int32_t id_from, NMHDR* nmhdr)
 	return 0;
 }
 
-BOOL on_create(HWND window, LPCREATESTRUCT create_struct)
+LRESULT CALLBACK window_fn(HWND window, uint32_t message, WPARAM wParam, LPARAM lParam)
 {
-	create_struct;
-
-	g_window_child = CreateWindow(WC_LISTVIEW, nullptr, LVS_LIST | WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(1), g_instance, 0);
-
-	if (g_shell_windows.CoCreateInstance(CLSID_ShellWindows) != S_OK)
-		return FALSE;
-
-	build_explorer_list();
-
-	g_shell_handler.Attach(new(std::nothrow) shell_event_sink);
-
-	g_shell_handler->Connect(g_shell_windows);
-
-	return TRUE;
-}
-
-void on_destroy(HWND window)
-{
-	window;
-
-	g_shell_windows.Release();
-
-	if (g_shell_handler)
+	switch (message)
 	{
-		g_shell_handler->Disconnect();
+		HANDLE_MSG(window, WM_CREATE, on_create);
 
-		g_shell_handler.Release();
+		HANDLE_MSG(window, WM_SIZE, on_size);
+
+		HANDLE_MSG(window, WM_DESTROY, on_destroy);
+
+		HANDLE_MSG(window, WM_PAINT, on_paint);
+
+		HANDLE_MSG(window, WM_NOTIFY, on_notify);
+
+	case WM_PRINTCLIENT:
+
+		on_print_client(window, reinterpret_cast<HDC>(wParam));
+
+		return 0;
 	}
 
-	PostQuitMessage(0);
+	return DefWindowProcW(window, message, wParam, lParam);
+}
+
+
+
+bool init()
+{
+	WNDCLASS wc;
+	wc.style = 0;
+	wc.lpfnWndProc = window_fn;
+	wc.cbClsExtra = 0;
+	wc.cbWndExtra = 0;
+	wc.hInstance = GetModuleHandleW(nullptr);
+	wc.hIcon = nullptr;
+	wc.hCursor = LoadCursorW(wc.hInstance, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.lpszMenuName = nullptr;
+	wc.lpszClassName = g_window_class_name;
+
+	if (!RegisterClassW(&wc))
+		return false;
+
+	return true;
 }
 
 
@@ -497,11 +551,13 @@ HRESULT build_explorer_list()
 	return S_OK;
 }
 
+
+
+
+
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR command_line, int32_t command_show)
 {
 	command_line, prev_instance;
-
-	g_instance = instance;
 
 	if (!init())
 		return 0;
@@ -523,6 +579,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR command_li
 	}
 
 	CoUninitialize();
+
+	UnregisterClassW(g_window_class_name, instance);
 
 	return 0;
 }
