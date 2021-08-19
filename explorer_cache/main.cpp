@@ -2,572 +2,442 @@
 #define STRICT_TYPED_ITEMIDS
 
 #include <Windows.h>
-#include <windowsx.h>
-#include <Ole2.h>
-#include <CommCtrl.h>
-#include <Shlwapi.h>
-
 #include <ShlObj.h>
 #include <atlbase.h>
 #include <atlalloc.h>
 #include <ExDisp.h>
 #include <ExDispid.h>
 
-#include <cstdio>
 
-
-
-HRESULT build_explorer_list();
 
 
 
 constexpr const wchar_t* g_message_caption = L"explorer_cache.exe";
 
-constexpr const wchar_t* g_window_class_name = L"och_scratch";
-
-CComPtr<IShellWindows> g_shell_windows;
-
-HWND g_window_child;
-
-uint32_t g_openclose_cnt;
 
 
-
-
-
+#define message(macro_defined_message) MessageBoxW(nullptr, macro_defined_message, g_message_caption, MB_OK)
 
 #define checkret(macro_defined_argument) if(HRESULT macro_defined_result = (macro_defined_argument); macro_defined_result != S_OK) return macro_defined_result;
 
-#define checkexit(macro_defined_argument, macro_defined_message) if(HRESULT macro_defined_result = (macro_defined_argument); macro_defined_result != S_OK) { MessageBoxW(nullptr, macro_defined_message, g_message_caption, MB_OK); exit(1); }
+#define checkexit(macro_defined_argument, macro_defined_message) if(HRESULT macro_defined_result = (macro_defined_argument); macro_defined_result != S_OK) { message(macro_defined_message); g.destroy(); exit(1); }
 
 
 
 
 
-void update_text(HWND window, PCWSTR text);
 
 
-
-struct shell_event_sink : public DShellWindowsEvents
+struct global_data
 {
-private:
-
-	CComPtr<IConnectionPoint> m_connection_point;
-
-	uint32_t m_ref_cnt;
-
-	uint32_t m_cookie;
-
-public:
-
-	shell_event_sink() : m_ref_cnt{ 1 }, m_cookie{ 0 } {}
-
-	/* IUnknown */
-	IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
+	struct shell_event_handler : public DShellWindowsEvents
 	{
-		if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DShellWindowsEvents)
-		{
-			*ppv = static_cast<DShellWindowsEvents*>(static_cast<IDispatch*>(this));
+		CComPtr<IConnectionPoint> m_connection_point;
 
-			AddRef();
+		uint32_t m_ref_cnt;
+
+		uint32_t m_cookie;
+
+
+		HRESULT create(IShellWindows* unknown)
+		{
+			m_ref_cnt = 1;
+
+			m_cookie = 0;
+
+			return Connect(unknown);
+		}
+
+		void destroy()
+		{
+			Disconnect();
+		}
+
+		/* IUnknown */
+		IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
+		{
+			if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DShellWindowsEvents)
+			{
+				*ppv = static_cast<DShellWindowsEvents*>(static_cast<IDispatch*>(this));
+
+				AddRef();
+
+				return S_OK;
+			}
+			else
+			{
+				*ppv = nullptr;
+
+				return E_NOINTERFACE;
+			}
+		}
+
+		IFACEMETHODIMP_(ULONG) AddRef()
+		{
+			return InterlockedIncrement(&m_ref_cnt);
+		}
+
+		IFACEMETHODIMP_(ULONG) Release()
+		{
+			return InterlockedDecrement(&m_ref_cnt);
+		}
+
+		// *** IDispatch ***
+		IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo)
+		{
+			*pctinfo = 0;
+
+			return E_NOTIMPL;
+		}
+
+		IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
+		{
+			iTInfo; lcid;
+
+			*ppTInfo = nullptr;
+
+			return E_NOTIMPL;
+		}
+
+		IFACEMETHODIMP GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
+		{
+			riid; rgszNames; cNames; lcid; rgDispId;
+
+			return E_NOTIMPL;
+		}
+
+		IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
+		{
+			riid; lcid; wFlags; pexcepinfo; puArgErr; pdispparams;
+
+			if (pvarResult)
+				VariantInit(pvarResult);
+
+			if (dispid == DISPID_WINDOWREGISTERED || dispid == DISPID_WINDOWREVOKED)
+				g.rebuild_explorer_list();
 
 			return S_OK;
 		}
-		else
+
+		HRESULT Connect(IUnknown* punk)
 		{
-			*ppv = nullptr;
+			CComPtr<IConnectionPointContainer> connection_point_container;
 
-			return E_NOINTERFACE;
+			checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
+
+			checkret(connection_point_container->FindConnectionPoint(DIID_DShellWindowsEvents, &m_connection_point));
+
+			return m_connection_point->Advise(this, reinterpret_cast<DWORD*>(&m_cookie));
 		}
-	}
 
-	IFACEMETHODIMP_(ULONG) AddRef()
+		void Disconnect()
+		{
+			if (m_cookie)
+			{
+				m_connection_point->Unadvise(m_cookie);
+
+				m_connection_point.Release();
+
+				m_cookie = 0;
+			}
+		}
+	};
+
+	struct browser_event_handler : DWebBrowserEvents
 	{
-		return InterlockedIncrement(&m_ref_cnt);
-	}
+		CComPtr<IConnectionPoint> m_connection_point;
 
-	IFACEMETHODIMP_(ULONG) Release()
+		uint32_t m_ref_cnt = 0;
+
+		uint32_t m_cookie = 0;
+
+		HWND m_window = nullptr;
+
+		CComHeapPtr<ITEMIDLIST_ABSOLUTE> m_location;
+
+		uint32_t m_openclose_id = 0;
+
+
+
+		HRESULT create(HWND window, IDispatch* dispatch, uint32_t openclose_id, ITEMIDLIST_ABSOLUTE* location)
+		{
+			m_ref_cnt = 1;
+
+			m_cookie = 0;
+
+			m_window = window;
+
+			m_openclose_id = openclose_id;
+
+			m_location.Attach(location);
+
+			return Connect(dispatch);
+		}
+
+		void destroy()
+		{
+			m_location.Detach();
+
+			Disconnect();
+		}
+
+		void update_openclose_id(uint32_t openclose_id)
+		{
+			m_openclose_id = openclose_id;
+		}
+
+		/* IUnknown */
+		IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
+		{
+			if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DWebBrowserEvents)
+			{
+				*ppv = static_cast<DWebBrowserEvents*>(static_cast<IDispatch*>(this));
+
+				AddRef();
+
+				return S_OK;
+			}
+			else
+			{
+				*ppv = nullptr;
+
+				return E_NOINTERFACE;
+			}
+		}
+
+		IFACEMETHODIMP_(ULONG) AddRef()
+		{
+			return InterlockedIncrement(&m_ref_cnt);
+		}
+
+		IFACEMETHODIMP_(ULONG) Release()
+		{
+			return InterlockedDecrement(&m_ref_cnt);
+		}
+
+		// *** IDispatch ***
+		IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo)
+		{
+			*pctinfo = 0;
+
+			return E_NOTIMPL;
+		}
+
+		IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
+		{
+			iTInfo; lcid;
+
+			*ppTInfo = nullptr;
+
+			return E_NOTIMPL;
+		}
+
+		IFACEMETHODIMP GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
+		{
+			riid; rgszNames; cNames; lcid; rgDispId;
+
+			return E_NOTIMPL;
+		}
+
+		IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
+		{
+			riid; lcid; wFlags; pexcepinfo; puArgErr; pvarResult;
+
+			if (pvarResult)
+				VariantInit(pvarResult);
+
+			if (dispid == DISPID_NAVIGATECOMPLETE)
+			{
+				m_location.Detach();
+
+				m_location.Attach(ILCreateFromPathW(pdispparams->rgvarg[0].bstrVal));
+			}
+			else if (dispid == DISPID_QUIT)
+				g.last_closed_location.Attach(m_location.Detach());
+
+			return S_OK;
+		}
+
+		HRESULT Connect(IUnknown* punk)
+		{
+			CComPtr<IConnectionPointContainer> connection_point_container;
+
+			checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
+
+			checkret(connection_point_container->FindConnectionPoint(DIID_DWebBrowserEvents, &m_connection_point));
+
+			return m_connection_point->Advise(this, reinterpret_cast<DWORD*>(&m_cookie));
+		}
+
+		void Disconnect()
+		{
+			if (m_cookie)
+			{
+				m_connection_point->Unadvise(m_cookie);
+
+				m_connection_point.Release();
+
+				m_cookie = 0;
+			}
+		}
+	};
+
+
+
+	CComPtr<IShellWindows> shell_windows{};
+
+	CComHeapPtr<ITEMIDLIST_ABSOLUTE> last_closed_location{};
+
+	shell_event_handler openclose_handler{};
+
+	browser_event_handler navigation_handlers[32]{};
+
+	uint32_t slots_occupied{};
+
+	uint32_t openclose_cnt{};
+
+
+
+	HRESULT rebuild_explorer_list()
 	{
-		return InterlockedDecrement(&m_ref_cnt);
-	}
+		CComPtr<IUnknown> unknown_enum;
+		checkret(shell_windows->_NewEnum(&unknown_enum));
 
-	// *** IDispatch ***
-	IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo)
-	{
-		*pctinfo = 0;
+		++openclose_cnt;
 
-		return E_NOTIMPL;
-	}
+		CComQIPtr<IEnumVARIANT> enum_variant(unknown_enum);
 
-	IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
-	{
-		iTInfo; lcid;
+		for (CComVariant var; enum_variant->Next(1, &var, nullptr) == S_OK; var.Clear())
+		{
+			if (var.vt != VT_DISPATCH)
+				continue;
 
-		*ppTInfo = nullptr;
+			// get browser info
 
-		return E_NOTIMPL;
-	}
+			CComPtr<IShellBrowser> curr_shell_browser;
+			if (IUnknown_QueryService(var.pdispVal, SID_STopLevelBrowser, IID_PPV_ARGS(&curr_shell_browser)) != S_OK)
+				continue;
 
-	IFACEMETHODIMP GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
-	{
-		riid; rgszNames; cNames; lcid; rgDispId;
+			HWND curr_window;
+			if (curr_shell_browser->GetWindow(&curr_window) != S_OK)
+				continue;
 
-		return E_NOTIMPL;
-	}
+			CComPtr<IShellView> shell_view;
+			if (curr_shell_browser->QueryActiveShellView(&shell_view) != S_OK)
+				continue;
 
-	IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
-	{
-		riid; lcid; wFlags; pexcepinfo; puArgErr; pdispparams;
+			CComQIPtr<IPersistIDList> persist_id_list(shell_view);
+			if (!persist_id_list)
+				return E_FAIL;
 
-		if (pvarResult)
-			VariantInit(pvarResult);
+			CComHeapPtr<ITEMIDLIST_ABSOLUTE> curr_location;
+			if (persist_id_list->GetIDList(&curr_location) != S_OK)
+				continue;
 
-		if (dispid == DISPID_WINDOWREGISTERED || dispid == DISPID_WINDOWREVOKED)
-			build_explorer_list();
+			// refresh/create navigation handler
+
+			int32_t slot = get_slot_by_hwnd(curr_window);
+
+			if (slot != -1)
+			{
+				navigation_handlers[slot].update_openclose_id(openclose_cnt);
+
+				continue;
+			}
+			else if (create_slot(curr_window, curr_shell_browser, var.pdispVal, curr_location.Detach()) != S_OK)
+			{
+				message(L"Limit of 32 simultaneously open explorer windows reached");
+
+				break;
+			}
+		}
+
+		for (int32_t i = 0; i != 32; ++i)
+		{
+			if (!(slots_occupied & (1 << i)))
+				continue;
+
+			if (navigation_handlers[i].m_openclose_id != openclose_cnt)
+				destroy_slot(i);
+		}
 
 		return S_OK;
 	}
 
-	HRESULT Connect(IUnknown* punk)
+	int32_t get_slot_by_hwnd(HWND window)
 	{
-		CComPtr<IConnectionPointContainer> connection_point_container;
+		for(int32_t i = 0; i != 32; ++i)
+			if ((slots_occupied & (1 << i)) && navigation_handlers[i].m_window == window)
+			{
+				return i;
+			}
 
-		checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
-
-		checkret(connection_point_container->FindConnectionPoint(DIID_DShellWindowsEvents, &m_connection_point));
-
-		return m_connection_point->Advise(this, reinterpret_cast<DWORD*>(&m_cookie));
+		return -1;
 	}
 
-	void Disconnect()
+	HRESULT create_slot(HWND window, IShellBrowser* shell_browser, IDispatch* dispatch, ITEMIDLIST_ABSOLUTE* location)
 	{
-		if (m_cookie)
-		{
-			m_connection_point->Unadvise(m_cookie);
+		for (int32_t i = 0; i != 32; ++i)
+			if (!(slots_occupied & (1 << i)))
+			{
+				slots_occupied |= 1 << i;
 
-			m_connection_point.Release();
+				navigation_handlers[i].create(window, dispatch, openclose_cnt, location);
 
-			m_cookie = 0;
-		}
-	}
-};
+				if(last_closed_location)
+					shell_browser->BrowseObject(last_closed_location, SBSP_SAMEBROWSER | SBSP_ABSOLUTE);
 
-struct browser_event_sink : DWebBrowserEvents
-{
-private:
+				return S_OK;
+			}
 
-	CComPtr<IConnectionPoint> m_connection_point;
-
-	uint32_t m_ref_cnt;
-
-	uint32_t m_cookie;
-
-	HWND m_window;
-
-public:
-
-	browser_event_sink(HWND window) : m_ref_cnt{ 1 }, m_cookie{ 0 }, m_window{ window } {}
-
-	/* IUnknown */
-	IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv)
-	{
-		if (riid == IID_IUnknown || riid == IID_IDispatch || riid == DIID_DWebBrowserEvents)
-		{
-			*ppv = static_cast<DWebBrowserEvents*>(static_cast<IDispatch*>(this));
-
-			AddRef();
-
-			return S_OK;
-		}
-		else
-		{
-			*ppv = nullptr;
-
-			return E_NOINTERFACE;
-		}
-	}
-
-	IFACEMETHODIMP_(ULONG) AddRef()
-	{
-		return InterlockedIncrement(&m_ref_cnt);
-	}
-
-	IFACEMETHODIMP_(ULONG) Release()
-	{
-		return InterlockedDecrement(&m_ref_cnt);
-	}
-
-	// *** IDispatch ***
-	IFACEMETHODIMP GetTypeInfoCount(UINT* pctinfo)
-	{
-		*pctinfo = 0;
-
-		return E_NOTIMPL;
-	}
-
-	IFACEMETHODIMP GetTypeInfo(UINT iTInfo, LCID lcid, ITypeInfo** ppTInfo)
-	{
-		iTInfo; lcid;
-
-		*ppTInfo = nullptr;
-
-		return E_NOTIMPL;
-	}
-
-	IFACEMETHODIMP GetIDsOfNames(REFIID riid, LPOLESTR* rgszNames, UINT cNames, LCID lcid, DISPID* rgDispId)
-	{
-		riid; rgszNames; cNames; lcid; rgDispId;
-
-		return E_NOTIMPL;
-	}
-
-	IFACEMETHODIMP Invoke(DISPID dispid, REFIID riid, LCID lcid, WORD wFlags, DISPPARAMS* pdispparams, VARIANT* pvarResult, EXCEPINFO* pexcepinfo, UINT* puArgErr)
-	{
-		riid; lcid; wFlags; pexcepinfo; puArgErr; pvarResult;
-
-		if (pvarResult)
-			VariantInit(pvarResult);
-
-
-		switch (dispid)
-		{
-		case DISPID_NAVIGATECOMPLETE:
-			update_text(m_window, pdispparams->rgvarg[0].bstrVal);
-			break;
-
-		case DISPID_QUIT:
-			update_text(m_window, L"<closed>");
-			break;
-		}
-
-		return S_OK;
-	}
-
-	HRESULT Connect(IUnknown* punk)
-	{
-		CComPtr<IConnectionPointContainer> connection_point_container;
-
-		checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
-
-		checkret(connection_point_container->FindConnectionPoint(DIID_DWebBrowserEvents, &m_connection_point));
-
-		return m_connection_point->Advise(this, reinterpret_cast<DWORD*>(&m_cookie));
-	}
-
-	void Disconnect()
-	{
-		if (m_cookie)
-		{
-			m_connection_point->Unadvise(m_cookie);
-
-			m_connection_point.Release();
-
-			m_cookie = 0;
-		}
-	}
-};
-
-
-
-shell_event_sink g_shell_handler{};
-
-
-
-struct item_info
-{
-	HWND m_window;
-
-	browser_event_sink m_handler;
-
-	uint32_t last_openclose_cnt;
-
-	item_info(HWND window, IDispatch* dispatch) : m_window{ window }, m_handler{ window }, last_openclose_cnt{ g_openclose_cnt }
-	{
-		m_handler.Connect(dispatch);
-	}
-
-	~item_info() 
-	{
-		m_handler.Disconnect();
-	}
-};
-
-
-
-BOOL on_create(HWND window, LPCREATESTRUCT create_struct)
-{
-	create_struct;
-
-	g_window_child = CreateWindow(WC_LISTVIEW, nullptr, LVS_LIST | WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(1), GetModuleHandleW(nullptr), 0);
-
-	if (g_shell_windows.CoCreateInstance(CLSID_ShellWindows) != S_OK)
-		return FALSE;
-
-	build_explorer_list();
-
-	g_shell_handler.Connect(g_shell_windows);
-
-	return TRUE;
-}
-
-void on_destroy(HWND window)
-{
-	window;
-
-	MessageBoxW(nullptr, L"Closing", g_message_caption, MB_OK);
-
-	g_shell_windows.Release();
-
-	g_shell_handler.Disconnect();
-
-	PostQuitMessage(0);
-}
-
-void on_size(HWND window, uint32_t state, int32_t cx, int32_t cy)
-{
-	window, state;
-
-	if (g_window_child)
-		MoveWindow(g_window_child, 0, 0, cx, cy, true);
-}
-
-void paint_content(HWND window, PAINTSTRUCT* ps)
-{
-	window, ps;
-}
-
-void on_paint(HWND window)
-{
-	PAINTSTRUCT ps;
-
-	BeginPaint(window, &ps);
-
-	paint_content(window, &ps);
-
-	EndPaint(window, &ps);
-}
-
-void on_print_client(HWND window, HDC hdc)
-{
-	PAINTSTRUCT ps;
-
-	ps.hdc = hdc;
-
-	GetClientRect(window, &ps.rcPaint);
-
-	paint_content(window, &ps);
-}
-
-LRESULT on_notify(HWND window, int32_t id_from, NMHDR* nmhdr)
-{
-	window;
-
-	if (id_from == 1)
-	{
-		if (nmhdr->code == LVN_DELETEITEM)
-		{
-			NMLISTVIEW* nm_listview = CONTAINING_RECORD(nmhdr, NMLISTVIEW, hdr);
-
-			delete reinterpret_cast<item_info*>(nm_listview->lParam);
-		}
-	}
-
-	return 0;
-}
-
-LRESULT CALLBACK window_fn(HWND window, uint32_t message, WPARAM wParam, LPARAM lParam)
-{
-	switch (message)
-	{
-		HANDLE_MSG(window, WM_CREATE, on_create);
-
-		HANDLE_MSG(window, WM_SIZE, on_size);
-
-		HANDLE_MSG(window, WM_DESTROY, on_destroy);
-
-		HANDLE_MSG(window, WM_PAINT, on_paint);
-
-		HANDLE_MSG(window, WM_NOTIFY, on_notify);
-
-	case WM_PRINTCLIENT:
-
-		on_print_client(window, reinterpret_cast<HDC>(wParam));
-
-		return 0;
-	}
-
-	return DefWindowProcW(window, message, wParam, lParam);
-}
-
-
-
-bool init()
-{
-	WNDCLASS wc;
-	wc.style = 0;
-	wc.lpfnWndProc = window_fn;
-	wc.cbClsExtra = 0;
-	wc.cbWndExtra = 0;
-	wc.hInstance = GetModuleHandleW(nullptr);
-	wc.hIcon = nullptr;
-	wc.hCursor = LoadCursorW(wc.hInstance, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-	wc.lpszMenuName = nullptr;
-	wc.lpszClassName = g_window_class_name;
-
-	if (!RegisterClassW(&wc))
-		return false;
-
-	return true;
-}
-
-
-
-item_info* get_item_by_index(int32_t index)
-{
-	LVITEM item{};
-	item.mask = LVIF_PARAM;
-	item.iItem = index;
-	
-	ListView_GetItem(g_window_child, &item);
-
-	return reinterpret_cast<item_info*>(item.lParam);
-}
-
-item_info* get_item_by_window(HWND window, int32_t* out_index)
-{
-	int32_t index = ListView_GetItemCount(g_window_child);
-
-	while (--index >= 0)
-	{
-		item_info* info = get_item_by_index(index);
-
-		if (info->m_window == window)
-		{
-			if (out_index)
-				*out_index = index;
-
-			return info;
-		}
-	}
-
-	return nullptr;
-}
-
-void update_text(HWND window, PCWSTR text)
-{
-	int index;
-
-	if (get_item_by_window(window, &index))
-		ListView_SetItemText(g_window_child, index, 0, const_cast<PWSTR>(text));
-}
-
-HRESULT get_location_from_view(IShellBrowser* shell_browser, PWSTR* out_location) noexcept
-{
-	*out_location = nullptr;
-
-	CComPtr<IShellView> shell_view;
-	checkret(shell_browser->QueryActiveShellView(&shell_view));
-
-	CComQIPtr<IPersistIDList> persist_id_list(shell_view);
-	if (!persist_id_list)
 		return E_FAIL;
-
-	CComHeapPtr<ITEMIDLIST_ABSOLUTE> id_list;
-	checkret(persist_id_list->GetIDList(&id_list));
-
-	CComPtr<IShellItem> shell_item;
-	checkret(SHCreateItemFromIDList(id_list, IID_PPV_ARGS(&shell_item)));
-
-	return shell_item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, out_location);
-}
-
-HRESULT get_browser_info(IUnknown* unknown, HWND* out_window, PWSTR* out_location) noexcept
-{
-	CComPtr<IShellBrowser> shell_browser;
-	checkret(IUnknown_QueryService(unknown, SID_STopLevelBrowser, IID_PPV_ARGS(&shell_browser)));
-
-	checkret(shell_browser->GetWindow(out_window));
-
-	return get_location_from_view(shell_browser, out_location);
-}
-
-HRESULT build_explorer_list()
-{
-	CComPtr<IUnknown> unknown_enum;
-	checkret(g_shell_windows->_NewEnum(&unknown_enum));
-
-	++g_openclose_cnt;
-
-	CComQIPtr<IEnumVARIANT> enum_variant(unknown_enum);
-
-	for (CComVariant var; enum_variant->Next(1, &var, nullptr) == S_OK; var.Clear())
-	{
-		if (var.vt != VT_DISPATCH)
-			continue;
-
-		HWND curr_window;
-
-		CComHeapPtr<WCHAR> curr_location;
-
-		if (get_browser_info(var.pdispVal, &curr_window, &curr_location) != S_OK)
-			continue;
-
-		item_info* info = get_item_by_window(curr_window, nullptr);
-
-		if (info)
-		{
-			info->last_openclose_cnt = g_openclose_cnt;
-
-			continue;
-		}
-		else
-			info = new(std::nothrow) item_info(curr_window, var.pdispVal);
-
-		if (!info)
-			continue;
-
-		LVITEM item{};
-		item.mask = LVIF_TEXT | LVIF_PARAM;
-		item.iItem = MAXLONG;
-		item.iSubItem = 0;
-		item.pszText = curr_location;
-		item.lParam = reinterpret_cast<LPARAM>(info);
-		
-		if (ListView_InsertItem(g_window_child, &item) < 0)
-			delete info;
 	}
 
-	int32_t item_idx = ListView_GetItemCount(g_window_child);
-
-	while (--item_idx >= 0)
+	void destroy_slot(int32_t slot)
 	{
-		item_info* info = get_item_by_index(item_idx);
+		slots_occupied &= ~(1 << slot);
 
-		if (info->last_openclose_cnt != g_openclose_cnt)
-			ListView_DeleteItem(g_window_child, item_idx);
+		navigation_handlers[slot].destroy();
 	}
 
-	return S_OK;
-}
 
 
+	void create()
+	{
+		checkexit(CoInitialize(nullptr), L"Call to CoInitialize failed");
+
+		checkexit(shell_windows.CoCreateInstance(CLSID_ShellWindows), L"Could not create IShellWindows");
+
+		checkexit(openclose_handler.create(shell_windows), L"Could not create openclose_handler");
+
+		rebuild_explorer_list();
+	}
+
+	void destroy()
+	{
+		openclose_handler.destroy();
+
+		for (int32_t i = 0; i != 32; ++i)
+			if (slots_occupied & (1 << i))
+				navigation_handlers[i].destroy();
+
+		shell_windows.Release();
+
+		last_closed_location.Free();
+
+		CoUninitialize();
+
+		message(L"Finished cleanup");
+	}
+} g;
 
 
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR command_line, int32_t command_show)
 {
-	command_line, prev_instance;
+	command_show; command_line; prev_instance; instance;
 
-	if (!init())
-		return 0;
-
-	if (CoInitialize(nullptr) != S_OK)
-		return 0;
-
-	HWND window = CreateWindowW(L"och_scratch", L"scratch ui", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, instance, 0);
-
-	ShowWindow(window, command_show);
+	g.create();
 
 	MSG message;
 
@@ -578,9 +448,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR command_li
 		DispatchMessageW(&message);
 	}
 
-	CoUninitialize();
-
-	UnregisterClassW(g_window_class_name, instance);
+	g.destroy();
 
 	return 0;
 }
