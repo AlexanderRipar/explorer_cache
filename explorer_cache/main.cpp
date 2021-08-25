@@ -5,10 +5,7 @@
 #include <ShlObj.h>
 #include <atlbase.h>
 #include <atlalloc.h>
-#include <ExDisp.h>
 #include <ExDispid.h>
-
-
 
 
 
@@ -21,10 +18,6 @@ constexpr const wchar_t* g_message_caption = L"explorer_cache.exe";
 #define checkret(macro_defined_argument) if(HRESULT macro_defined_result = (macro_defined_argument); macro_defined_result != S_OK) return macro_defined_result;
 
 #define checkexit(macro_defined_argument, macro_defined_message) if(HRESULT macro_defined_result = (macro_defined_argument); macro_defined_result != S_OK) { message(macro_defined_message); g.destroy(); exit(1); }
-
-
-
-
 
 
 
@@ -248,7 +241,7 @@ struct global_data
 
 			if (dispid == DISPID_NAVIGATECOMPLETE)
 			{
-				m_location.Detach();
+				m_location.Free();
 
 				m_location.Attach(ILCreateFromPathW(pdispparams->rgvarg[0].bstrVal));
 			}

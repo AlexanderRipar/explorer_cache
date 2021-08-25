@@ -163,27 +163,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\och_lib\och_lib\och_fio.cpp" />
-    <ClCompile Include="..\..\och_lib\och_lib\och_fmt.cpp" />
-    <ClCompile Include="..\..\och_lib\och_lib\och_time.cpp" />
-    <ClCompile Include="..\..\och_lib\och_lib\och_utf8.cpp" />
     <ClCompile Include="main.cpp">
       <LanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">stdcpp20</LanguageStandard>
       <LanguageStandard Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">stdcpp20</LanguageStandard>
       <LanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">stdcpp20</LanguageStandard>
       <LanguageStandard Condition="'$(Configuration)|$(Platform)'=='Release|x64'">stdcpp20</LanguageStandard>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="..\..\och_lib\och_lib\och_constexpr_util.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_debug.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_fio.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_fmt.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_range.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_time.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_timer.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_type_union.h" />
-    <ClInclude Include="..\..\och_lib\och_lib\och_utf8.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
