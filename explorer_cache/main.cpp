@@ -32,7 +32,7 @@ struct global_data
 		uint32_t m_cookie;
 
 
-		HRESULT create(IShellWindows* unknown)
+		HRESULT create(CComPtr<IShellWindows> unknown)
 		{
 			m_ref_cnt = 1;
 
@@ -152,7 +152,7 @@ struct global_data
 
 
 
-		HRESULT create(HWND window, IDispatch* dispatch, uint32_t openclose_id, ITEMIDLIST_ABSOLUTE* location)
+		HRESULT create(HWND window, CComPtr<IDispatch> dispatch, uint32_t openclose_id, ITEMIDLIST_ABSOLUTE* location)
 		{
 			m_ref_cnt = 1;
 
@@ -169,8 +169,6 @@ struct global_data
 
 		void destroy()
 		{
-			m_location.Detach();
-
 			Disconnect();
 		}
 
@@ -246,7 +244,11 @@ struct global_data
 				m_location.Attach(ILCreateFromPathW(pdispparams->rgvarg[0].bstrVal));
 			}
 			else if (dispid == DISPID_QUIT)
+			{
+				g.last_closed_location.Free();
+
 				g.last_closed_location.Attach(m_location.Detach());
+			}
 
 			return S_OK;
 		}
@@ -254,7 +256,6 @@ struct global_data
 		HRESULT Connect(IUnknown* punk)
 		{
 			CComPtr<IConnectionPointContainer> connection_point_container;
-
 			checkret(punk->QueryInterface(IID_PPV_ARGS(&connection_point_container)));
 
 			checkret(connection_point_container->FindConnectionPoint(DIID_DWebBrowserEvents, &m_connection_point));
@@ -291,10 +292,11 @@ struct global_data
 
 
 
-	HRESULT rebuild_explorer_list()
+	void rebuild_explorer_list()
 	{
 		CComPtr<IUnknown> unknown_enum;
-		checkret(shell_windows->_NewEnum(&unknown_enum));
+		if (shell_windows->_NewEnum(&unknown_enum) != S_OK)
+			return;
 
 		++openclose_cnt;
 
@@ -321,7 +323,7 @@ struct global_data
 
 			CComQIPtr<IPersistIDList> persist_id_list(shell_view);
 			if (!persist_id_list)
-				return E_FAIL;
+				return;
 
 			CComHeapPtr<ITEMIDLIST_ABSOLUTE> curr_location;
 			if (persist_id_list->GetIDList(&curr_location) != S_OK)
@@ -334,8 +336,6 @@ struct global_data
 			if (slot != -1)
 			{
 				navigation_handlers[slot].update_openclose_id(openclose_cnt);
-
-				continue;
 			}
 			else if (create_slot(curr_window, curr_shell_browser, var.pdispVal, curr_location.Detach()) != S_OK)
 			{
@@ -346,29 +346,20 @@ struct global_data
 		}
 
 		for (int32_t i = 0; i != 32; ++i)
-		{
-			if (!(slots_occupied & (1 << i)))
-				continue;
-
-			if (navigation_handlers[i].m_openclose_id != openclose_cnt)
+			if ((slots_occupied & (1 << i)) && navigation_handlers[i].m_openclose_id != openclose_cnt)
 				destroy_slot(i);
-		}
-
-		return S_OK;
 	}
 
 	int32_t get_slot_by_hwnd(HWND window)
 	{
 		for(int32_t i = 0; i != 32; ++i)
 			if ((slots_occupied & (1 << i)) && navigation_handlers[i].m_window == window)
-			{
 				return i;
-			}
 
 		return -1;
 	}
 
-	HRESULT create_slot(HWND window, IShellBrowser* shell_browser, IDispatch* dispatch, ITEMIDLIST_ABSOLUTE* location)
+	HRESULT create_slot(HWND window, CComPtr<IShellBrowser> shell_browser, CComPtr<IDispatch> dispatch, ITEMIDLIST_ABSOLUTE* location)
 	{
 		for (int32_t i = 0; i != 32; ++i)
 			if (!(slots_occupied & (1 << i)))
