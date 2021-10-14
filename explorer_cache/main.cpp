@@ -163,7 +163,7 @@ struct global_data
 			m_openclose_id = openclose_id;
 
 			m_location.Attach(location);
-
+			
 			return Connect(dispatch);
 		}
 
@@ -290,6 +290,10 @@ struct global_data
 
 	uint32_t openclose_cnt{};
 
+	CComHeapPtr<ITEMIDLIST_ABSOLUTE> folderid_quick_access{};
+
+	CComHeapPtr<ITEMIDLIST_ABSOLUTE> folderid_this_pc{};
+
 
 
 	void rebuild_explorer_list()
@@ -367,9 +371,17 @@ struct global_data
 				slots_occupied |= 1 << i;
 
 				navigation_handlers[i].create(window, dispatch, openclose_cnt, location);
+				
+				if (last_closed_location)
+				{
+					bool is_default_explorer = false;
 
-				if(last_closed_location)
-					shell_browser->BrowseObject(last_closed_location, SBSP_SAMEBROWSER | SBSP_ABSOLUTE);
+					if (CComPtr<IShellFolder> desktop; S_OK == SHGetDesktopFolder(&desktop))
+						is_default_explorer = !static_cast<int>(desktop->CompareIDs(0, folderid_quick_access, location)) || !static_cast<int>(desktop->CompareIDs(0, folderid_this_pc, location));
+
+					if(is_default_explorer)
+						shell_browser->BrowseObject(last_closed_location, SBSP_SAMEBROWSER | SBSP_ABSOLUTE);
+				}
 
 				return S_OK;
 			}
@@ -386,11 +398,28 @@ struct global_data
 
 
 
+	HRESULT create_explorer_default_open_folderids()
+	{
+		CComPtr<IShellFolder> desktop;
+
+		checkret(SHGetDesktopFolder(&desktop));
+
+		checkret(desktop->ParseDisplayName(nullptr, nullptr, const_cast<LPWSTR>(L"shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}"), nullptr, reinterpret_cast<PIDLIST_RELATIVE*>(&folderid_quick_access), 0));
+		
+		checkret(desktop->ParseDisplayName(nullptr, nullptr, const_cast<LPWSTR>(L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"), nullptr, reinterpret_cast<PIDLIST_RELATIVE*>(&folderid_this_pc), 0));
+
+		return S_OK;
+	}
+
+
+
 	void create()
 	{
 		checkexit(CoInitialize(nullptr), L"Call to CoInitialize failed");
 
 		checkexit(shell_windows.CoCreateInstance(CLSID_ShellWindows), L"Could not create IShellWindows");
+
+		checkexit(create_explorer_default_open_folderids(), L"Could not create ids of explorer default folder")
 
 		checkexit(openclose_handler.create(shell_windows), L"Could not create openclose_handler");
 
